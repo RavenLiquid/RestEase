@@ -3,6 +3,7 @@ using System.ComponentModel;
 using System.Net.Http;
 using System.Text;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 using RestEase.Implementation;
 
 namespace RestEase.HttpClientFactory
@@ -44,6 +45,36 @@ namespace RestEase.HttpClientFactory
             where T : class
         {
             return services.AddRestEaseClient((string?)null, options);
+        }
+
+        /// <summary>
+        /// Register the given RestEase interface type, without a Base Address. The interface should have an absolute
+        /// <see cref="BaseAddressAttribute"/> or <see cref="BasePathAttribute"/>, or should only use absolute paths.
+        /// </summary>
+        /// <typeparam name="T">Type of the RestEase interface</typeparam>
+        /// <param name="services">Contains to add to</param>
+        /// <param name="options">Additional options to pass</param>
+        /// <returns>Created <see cref="IHttpClientBuilder"/> for further configuration</returns>
+        public static IHttpClientBuilder AddRestEaseClient<T>(
+            this IServiceCollection services,
+            Func<IServiceProvider, 
+            AddRestEaseClientOptions<T>> optionsAction)
+            where T : class
+        {
+            if (optionsAction is null)
+                throw new ArgumentNullException(nameof(optionsAction));
+
+            return services
+                .CreateHttpClientBuilder(typeof(T), null)
+                .AddRestEaseClientCore(
+            typeof(T),
+            (sp =>
+                {
+                    var options = optionsAction(sp);
+                    return GenericFactory(options.RequesterFactory, options.RestClientConfigurer,
+                        options.InstanceConfigurer);
+                }),
+                    (sp => optionsAction(sp)?.RequestModifier));
         }
 
         // Needs to exist otherwise we can't call `AddRestEaseClient<T>(uri)`
@@ -362,6 +393,47 @@ namespace RestEase.HttpClientFactory
             {
                 httpClientBuilder.AddHttpMessageHandler(() => new ModifyingClientHttpHandler(requestModifier));
             }
+
+            return httpClientBuilder;
+        }
+
+        private static IHttpClientBuilder AddRestEaseClientCore(
+            this IHttpClientBuilder httpClientBuilder,
+            Type restEaseType,
+            Func<IServiceProvider, Func<HttpClient, object>> factoryAction,
+            Func<IServiceProvider, RequestModifier> requestModifierAction)
+        {
+            if (httpClientBuilder is null)
+                throw new ArgumentNullException(nameof(httpClientBuilder));
+
+            // See https://github.com/dotnet/runtime/blob/master/src/libraries/Microsoft.Extensions.Http/src/DependencyInjection/HttpClientBuilderExtensions.cs
+            httpClientBuilder.Services.AddTransient(restEaseType, serviceProvider =>
+            {
+                var httpClientFactory = serviceProvider.GetRequiredService<IHttpClientFactory>();
+                var httpClient = httpClientFactory.CreateClient(httpClientBuilder.Name);
+                return factoryAction(serviceProvider)(httpClient);
+            });
+
+            httpClientBuilder.AddHttpMessageHandler(sp => new ModifyingClientHttpHandler(requestModifierAction(sp)));
+
+            return httpClientBuilder;
+        }
+
+        private static IHttpClientBuilder AddRestEaseClientCore(
+            this IHttpClientBuilder httpClientBuilder,
+            Type restEaseType,
+            Func<IServiceProvider, Func<HttpClient, object>> factoryAction)
+        {
+            if (httpClientBuilder is null)
+                throw new ArgumentNullException(nameof(httpClientBuilder));
+
+            // See https://github.com/dotnet/runtime/blob/master/src/libraries/Microsoft.Extensions.Http/src/DependencyInjection/HttpClientBuilderExtensions.cs
+            httpClientBuilder.Services.AddTransient(restEaseType, serviceProvider =>
+            {
+                var httpClientFactory = serviceProvider.GetRequiredService<IHttpClientFactory>();
+                var httpClient = httpClientFactory.CreateClient(httpClientBuilder.Name);
+                return factoryAction(serviceProvider)(httpClient);
+            });
 
             return httpClientBuilder;
         }
